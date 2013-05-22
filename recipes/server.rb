@@ -1,24 +1,9 @@
 #
 # Cookbook Name:: galera
-# Recipe:: galera_server
-#
-# Copyright 2012, Severalnines AB.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Recipe:: server
 #
 
-install_flag = "/root/.s9s_galera_installed"
-purge_flag = "/root/.s9s_purge_mysql"
+install_flag = "/root/.galera_installed"
 
 group "mysql" do
 end
@@ -30,7 +15,7 @@ user "mysql" do
   shell "/bin/false"
 end
 
-galera_config = data_bag_item('s9s_galera', 'config')
+galera_config = node['galera']
 mysql_tarball = galera_config['mysql_wsrep_tarball_' + node['kernel']['machine']]
 # strip .tar.gz
 mysql_package = mysql_tarball[0..-8]
@@ -57,14 +42,13 @@ remote_file "#{Chef::Config[:file_cache_path]}/#{galera_package}" do
   action :create_if_missing
 end
 
-bash "expand-mysql-package" do
+bash "install-mysql-package" do
   user "root"
   code <<-EOH
-    rm -rf #{node['galera']['install_dir']}/mysql
-    zcat #{Chef::Config[:file_cache_path]}/#{mysql_tarball} | tar xf - -C #{node['galera']['install_dir']}
-    ln -sf #{node['galera']['install_dir']}/#{mysql_package} #{node['galera']['install_dir']}/mysql
+    zcat #{Chef::Config[:file_cache_path]}/#{mysql_tarball} | tar xf - -C #{node['mysql']['install_dir']}
+    ln -sf #{node['mysql']['install_dir']}/#{mysql_package} #{node['mysql']['base_dir']}
   EOH
-  not_if { File.directory?("#{node['galera']['install_dir']}/#{mysql_package}") }
+  not_if { File.directory?("#{node['mysql']['install_dir']}/#{mysql_package}") }
 end
 
 case node['platform']
@@ -74,11 +58,12 @@ case node['platform']
       code <<-EOH
         killall -9 mysqld_safe mysqld &> /dev/null
         yum remove mysql mysql-libs mysql-devel mysql-server mysql-bench
-        rm -rf #{node['mysql']['datadir']}/*
+        cd #{node['mysql']['data_dir']}
+        [ $? -eq 0 ] && rm -rf #{node['mysql']['data_dir']}/*
         rm -rf /etc/my.cnf /etc/mysql
         rm -f /root/#{install_flag}
       EOH
-      only_if { File.exists?("#{purge_flag}") || !FileTest.exists?("#{install_flag}") }
+      only_if { !FileTest.exists?("#{install_flag}") }
     end
   else
     bash "purge-mysql-galera" do
@@ -88,11 +73,13 @@ case node['platform']
         apt-get -y remove --purge mysql-server mysql-client mysql-common
         apt-get -y autoremove
         apt-get -y autoclean
-        rm -rf #{node['mysql']['datadir']}/*
-        rm -rf /etc/my.cnf /etc/mysql
+        cd #{node['mysql']['data_dir']}
+        [ $? -eq 0 ] && rm -rf #{node['mysql']['data_dir']}/*
+        cd #{node['mysql']['conf_dir']}
+        [ $? -eq 0 ] && rm -rf #{node['mysql']['conf_dir']}/*
         rm -f /root/#{install_flag}
       EOH
-      only_if { File.exists?("#{purge_flag}") || !FileTest.exists?("#{install_flag}") }
+      only_if { !FileTest.exists?("#{install_flag}") }
     end
 end
 
@@ -118,7 +105,7 @@ else
   end
 end
 
-directory node['mysql']['datadir'] do
+directory node['mysql']['conf_dir'] do
   owner "mysql"
   group "mysql"
   mode "0755"
@@ -126,7 +113,15 @@ directory node['mysql']['datadir'] do
   recursive true
 end
 
-directory node['mysql']['rundir'] do
+directory node['mysql']['data_dir'] do
+  owner "mysql"
+  group "mysql"
+  mode "0755"
+  action :create
+  recursive true
+end
+
+directory node['mysql']['run_dir'] do
   owner "mysql"
   group "mysql"
   mode "0755"
@@ -136,123 +131,85 @@ end
 
 # install db to the data directory
 execute "setup-mysql-datadir" do
-  command "#{node['mysql']['basedir']}/scripts/mysql_install_db --force --user=mysql --basedir=#{node['mysql']['basedir']} --datadir=#{node['mysql']['datadir']}"
-  not_if { FileTest.exists?("#{node['mysql']['datadir']}/mysql/user.frm") }
+  command "#{node['mysql']['base_dir']}/scripts/mysql_install_db --force --user=mysql --basedir=#{node['mysql']['base_dir']} --datadir=#{node['mysql']['data_dir']}"
+  not_if { FileTest.exists?("#{node['mysql']['data_dir']}/mysql/user.frm") }
 end
 
-service "mysql" do
-  service_name node['mysql']['servicename']
-  action :nothing
-end
 
-execute "cp-init.d-mysql.server" do
-  command "cp #{node['mysql']['basedir']}/support-files/mysql.server /etc/init.d/#{node['mysql']['servicename']}"
+execute "setup-init.d-mysql-service" do
+  command "cp #{node['mysql']['base_dir']}/support-files/mysql.server /etc/init.d/#{node['mysql']['servicename']}"
   not_if { FileTest.exists?("#{install_flag}") }
 end
 
-bash "set-paths.mysql.server" do
-  user "root"
-  code <<-EOH
-  sed -i 's#^basedir.*=#basedir=#{node['mysql']['basedir']}#' /etc/init.d/#{node['mysql']['servicename']}
-  sed -i 's#^datadir.*=#datadir=#{node['mysql']['datadir']}#' /etc/init.d/#{node['mysql']['servicename']}
-  EOH
-  not_if { FileTest.exists?("#{install_flag}") }
+init_host = false
+hosts = search(:node, "roles:mysql-master")
+wsrep_cluster_address = ''
+if hosts.length == 0 || (hosts.length == 1 && hosts[0]['fqdn'] == node['fqdn'])
+  Chef::Log.info("I've got the galera init position.")
+  init_host = true
+  wsrep_cluster_address = "gcomm://"
+else
+  hosts.each do |nodeish|
+    if nodeish["fqdn"] != node["fqdn"]
+      wsrep_cluster_address += "gcomm://#{nodeish['fqdn']}:#{node['wsrep']['port']},"
+    end
+  end
+  wsrep_cluster_address = wsrep_cluster_address[0..-2]
 end
+
 
 template "my.cnf" do
-  path "/etc/my.cnf"
+  path "#{node['mysql']['conf_dir']}/my.cnf"
   source "my.cnf.erb"
   owner "mysql"
   group "mysql"
   mode "0644"
+  variables :wsrep_urls => wsrep_cluster_address
+  notifies :restart, "service[mysql]", :immediately
 end
 
-my_ip = node['fqdn']
-init_host = galera_config['init_node']
-sync_host = init_host
-
-Chef::Log.info "My host = #{my_ip}"
-hosts = galera_config['galera_nodes']
-if File.exists?("#{install_flag}") && hosts != nil && hosts.length > 0
-  i = 0
-  begin
-    sync_host = hosts[rand(hosts.count)]
-    i += 1
-    if (i > hosts.count)
-      # no host found, use init node/host
-      sync_host = init_host
-      break
-    end
-  end while my_ip == sync_host
-end
-
-bash "init-cluster" do
+bash "wait-until-synced" do
   user "root"
   code <<-EOH
-  sed -i 's#^wsrep_urls.*=.*#wsrep_urls=gcomm://#' /etc/my.cnf
+    state=0
+    cnt=0
+    until [[ "$state" == "4" || "$cnt" > 5 ]]
+    do
+      state=$(#{node['mysql']['mysql_bin']} -uroot -h127.0.0.1 -e "SET wsrep_on=0; SHOW GLOBAL STATUS LIKE 'wsrep_local_state'")
+      state=$(echo "$state"  | tr '\n' ' ' | awk '{print $4}')
+      cnt=$(($cnt + 1))
+      sleep 1
+    done
   EOH
-  only_if { my_ip == init_host && !FileTest.exists?("#{install_flag}") }
+  only_if { init_host && !FileTest.exists?("#{install_flag}") }
 end
 
-service "start-init-node" do
-  service_name node['mysql']['servicename']
-  supports :restart => true, :start => true, :stop => true
-  action [:enable, :start]
-  only_if { my_ip == init_host && !FileTest.exists?("#{install_flag}") }
-end
-
-bash "set-wsrep-grants" do
+bash "set-wsrep-grants-mysqldump" do
   user "root"
   code <<-EOH
-    #{node['mysql']['mysqlbin']} -uroot -h127.0.0.1 -e "SET wsrep_on=0; DELETE FROM mysql.user WHERE user=''; GRANT ALL ON *.* TO '#{node['wsrep']['user']}'@'%' IDENTIFIED BY '#{node['wsrep']['password']}'"
-    #{node['mysql']['mysqlbin']} -uroot -h127.0.0.1 -e "SET wsrep_on=0; GRANT ALL ON *.* TO '#{node['wsrep']['user']}'@'127.0.0.1' IDENTIFIED BY '#{node['wsrep']['password']}'"
+    #{node['mysql']['mysql_bin']} -uroot -h127.0.0.1 -e "GRANT ALL ON *.* TO '#{node['wsrep']['user']}'@'%' IDENTIFIED BY '#{node['wsrep']['password']}'"
+    #{node['mysql']['mysql_bin']} -uroot -h127.0.0.1 -e "SET wsrep_on=0; GRANT ALL ON *.* TO '#{node['wsrep']['user']}'@'127.0.0.1' IDENTIFIED BY '#{node['wsrep']['password']}'"
   EOH
-  only_if { my_ip == init_host && (galera_config['sst_method'] == 'mysqldump') && !FileTest.exists?("#{install_flag}") }
+  only_if { init_host && (galera_config['sst_method'] == 'mysqldump') && !FileTest.exists?("#{install_flag}") }
 end
 
 bash "secure-mysql" do
   user "root"
   code <<-EOH
-    #{node['mysql']['mysqlbin']} -uroot -h127.0.0.1 -e "SET wsrep_on=0; UPDATE mysql.user SET Password=PASSWORD('#{node['mysql']['root_password']}') WHERE User='root'; DELETE FROM mysql.user WHERE User=''; DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1'); GRANT ALL ON *.* TO 'root'@'%' IDENTIFIED BY '#{node['mysql']['root_password']}' WITH GRANT OPTION"
-    #{node['mysql']['mysqlbin']} -uroot -h127.0.0.1 -e "SET wsrep_on=0; DROP DATABASE test; DELETE FROM mysql.db WHERE DB='test' OR Db='test\\_%;"
-    #{node['mysql']['mysqlbin']} -uroot -h127.0.0.1 -e "SET wsrep_on=0; FLUSH PRIVILEGES"
+    #{node['mysql']['mysql_bin']} -uroot -h127.0.0.1 -e "DROP DATABASE IF EXISTS test; DELETE FROM mysql.db WHERE DB='test' OR DB='test\\_%'"
+    #{node['mysql']['mysql_bin']} -uroot -h127.0.0.1 -e "UPDATE mysql.user SET Password=PASSWORD('#{node['mysql']['root_password']}') WHERE User='root'; DELETE FROM mysql.user WHERE User=''; DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1'); GRANT ALL ON *.* TO 'root'@'%' IDENTIFIED BY '#{node['mysql']['root_password']}' WITH GRANT OPTION; FLUSH PRIVILEGES;"
   EOH
-  only_if { my_ip == init_host && (galera_config['secure'] == 'yes') && !FileTest.exists?("#{install_flag}") }
+  only_if { init_host && (galera_config['secure'] == 'yes') && !FileTest.exists?("#{install_flag}") }
 end
 
-if my_ip != init_host && !File.exists?("#{install_flag}")
-Chef::Log.info "Joiner node sleeping 30 seconds to make sure init/sync node is up..."
-sleep(30)
-Chef::Log.info "Joiner node attaching to cluster with URL = gcomm://#{sync_host}:#{node['wsrep']['port']}"
-end
-
-hosts = galera_config['galera_nodes']
-wsrep_urls=''
-if !File.exists?("#{install_flag}") && hosts != nil && hosts.length > 0
-  hosts.each do |h|
-    wsrep_urls += "gcomm://#{h}:#{node['wsrep']['port']},"
-  end
-  wsrep_urls = wsrep_urls[0..-2]
-end
-
-bash "set-wsrep_urls" do
-  user "root"
-  code <<-EOH
-  sed -i 's#^wsrep_urls.*=.*#wsrep_urls=#{wsrep_urls}#' /etc/my.cnf
-  EOH
-  only_if { (galera_config['update_wsrep_urls'] == 'yes') || !FileTest.exists?("#{install_flag}") }
-end
-
-service "join-cluster" do
-  service_name node['mysql']['servicename']
+service "mysql" do
   supports :restart => true, :start => true, :stop => true
-  action [:enable, :start]
-  only_if { my_ip != init_host && !FileTest.exists?("#{install_flag}") }
+  service_name node['mysql']['servicename']
+  action :nothing
 end
 
-execute "s9s-galera-installed" do
+execute "galera-installed" do
   command "touch #{install_flag}"
   action :run
   not_if { FileTest.exists?("#{install_flag}") }
 end
-
