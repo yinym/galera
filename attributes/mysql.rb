@@ -37,7 +37,7 @@ default['mysql']['socket']  = "#{mysql['run_dir']}/mysqld.sock"
 default['mysql']['port']    = 3306
 default['mysql']['tmp_dir']  = "/tmp"
 
-default['mysql']['tunable']['buffer_pool_size'] = "256M"
+default['mysql']['tunable']['buffer_pool_size'] = "1024M"
 default['mysql']['tunable']['flush_log_at_trx_commit'] = 2
 default['mysql']['tunable']['file_per_table'] = 1
 default['mysql']['tunable']['doublewrite'] = 0
@@ -60,6 +60,7 @@ default['mysql']['tunable']['autoinc_lock_mode'] = 2
 default['mysql']['tunable']['condition_pushdown'] = 1
 
 default['mysql']['tunable']['binlog_format'] = "ROW"
+default['mysql']['tunable']['key_buffer_size'] = "512M"
 
 #OTHER THINGS, BUFFERS ETC
 default['mysql']['tunable']['max_connections'] = 512

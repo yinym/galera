@@ -57,7 +57,7 @@ engine_condition_pushdown = <%= node['mysql']['tunable']['condition_pushdown'] %
 binlog_format = <%= node['mysql']['tunable']['binlog_format'] %>
 
 #OTHER THINGS, BUFFERS ETC
-key_buffer_size = 8M
+key_buffer_size = <%= node['mysql']['tunable']['key_buffer_size'] %>
 max_allowed_packet = 16M
 sort_buffer_size = 512K
 read_buffer_size = 256K
