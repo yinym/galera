@@ -142,10 +142,8 @@ execute "setup-init.d-mysql-service" do
 end
 
 init_host = false
-hosts = Array.new
-members = Services.get('/services/mysql/members/').each do |member|
-  hosts << File.basename(member.key)
-end
+mysql_service = Services::Service.new "mysql"
+hosts = mysql_service.members.map { |m| m.ip }
 
 wsrep_cluster_address = ''
 
