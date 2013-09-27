@@ -27,7 +27,7 @@ default['mysql']['base_dir'] = "#{mysql['install_dir']}/mysql"
 default['mysql']['bin_dir']  = "#{mysql['base_dir']}/bin"
 default['mysql']['mysql_bin'] = "#{mysql['bin_dir']}/mysql"
 
-default['mysql']['root_password'] = "password"
+default['mysql']['server_root_password'] = "password"
 
 default['mysql']['conf_dir']  = '/etc/mysql'
 default['mysql']['data_dir'] = "/var/lib/mysql"
