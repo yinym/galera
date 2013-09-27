@@ -7,3 +7,5 @@ recipe "server", "Installs Galera Cluster for MySQL"
 %w{ debian ubuntu centos fedora redhat }.each do |os|
   supports os
 end
+
+depends "services"

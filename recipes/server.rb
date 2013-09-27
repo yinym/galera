@@ -142,16 +142,22 @@ execute "setup-init.d-mysql-service" do
 end
 
 init_host = false
-hosts = search(:node, "roles:mysql-master")
+hosts = Array.new
+members = Services.get('/services/mysql/members/').each do |member|
+  hosts << File.basename(member.key)
+end
+
 wsrep_cluster_address = ''
-if hosts.length == 0 || (hosts.length == 1 && hosts[0]['fqdn'] == node['fqdn'])
+
+# Assume that this mysql host has already been registered by ktc-database cook.
+if hosts.length == 1 && hosts.first == node["fqdn"]
   Chef::Log.info("I've got the galera init position.")
   init_host = true
   wsrep_cluster_address = "gcomm://"
 else
-  hosts.each do |nodeish|
-    if nodeish["fqdn"] != node["fqdn"]
-      wsrep_cluster_address += "gcomm://#{nodeish['fqdn']}:#{node['wsrep']['port']},"
+  hosts.each do |h|
+    if h != node["fqdn"]
+      wsrep_cluster_address += "gcomm://#{h}:#{node['wsrep']['port']},"
     end
   end
   wsrep_cluster_address = wsrep_cluster_address[0..-2]
